@@ -1,0 +1,182 @@
+import os
+import re
+from collections import defaultdict
+from datetime import datetime
+import matplotlib.pyplot as plt
+
+# 从文件名中提取日期和歌曲名
+def extract_metadata(file_name):
+    file_name = file_name.strip()
+
+    # 匹配完整日期格式 YYYY-MM-DD
+    match_full = re.match(r"^(\d{4}-\d{2}-\d{2})_(.+)\.txt$", file_name)
+    if match_full:
+        date, song_name = match_full.groups()
+        return date, song_name
+
+    # 匹配年份和月份格式 YYYY-MM
+    match_month = re.match(r"^(\d{4}-\d{2})_(.+)\.txt$", file_name)
+    if match_month:
+        date, song_name = match_month.groups()
+        date = f"{date}-01"  # 补全为第一天
+        return date, song_name
+
+    # 匹配仅年份格式 YYYY
+    match_year = re.match(r"^(\d{4})_(.+)\.txt$", file_name)
+    if match_year:
+        date, song_name = match_year.groups()
+        date = f"{date}-01-01"  # 补全为年初
+        return date, song_name
+
+    # 无法匹配的文件名
+    return None, None
+
+# 读取分词标注的文件
+def read_annotated_files(corpus_path):
+    files = []
+    for file_name in os.listdir(corpus_path):
+        if file_name.endswith(".txt"):
+            file_path = os.path.join(corpus_path, file_name)
+            date, song_name = extract_metadata(file_name)
+            if date:
+                files.append({'date': date, 'song_name': song_name, 'file_path': file_path})
+    return files
+
+# 提取谓词逻辑结构（支持嵌套关系）
+def extract_predicates(sentence):
+    tokens = [tuple(word.rsplit('/', 1)) for word in sentence.split() if '/' in word]
+    predicates = []
+    stack = []
+
+    for token, tag in tokens:
+        if tag.startswith('v'):  # 动词作为谓词（包括 vg 等）
+            predicate = {'verb': token, 'args': []}
+            
+            # 检查堆栈中的参数是否是嵌套谓词
+            while stack:
+                arg, arg_tag = stack.pop()
+                # 如果参数是一个谓词，将其作为嵌套参数
+                if isinstance(arg, dict):  
+                    predicate['args'].insert(0, arg)  # 嵌套谓词
+                elif arg_tag in {'n', 'r', 'm', 'a', 'ng'}:
+                    predicate['args'].insert(0, arg)  # 普通参数
+
+            # 如果堆栈中还有动词，尝试将当前谓词作为其参数
+            if stack and stack[-1][1].startswith('v'):
+                parent_verb = stack.pop()
+                parent_predicate = {'verb': parent_verb[0], 'args': [predicate]}
+                predicates.append(parent_predicate)
+            else:
+                predicates.append(predicate)
+        else:
+            stack.append((token, tag))  # 将非谓词存入堆栈
+
+    return predicates
+
+# 递归计算嵌套深度
+def calculate_nesting_depth(predicate):
+    # 如果谓词没有参数或参数中没有嵌套谓词，直接返回 1
+    if not predicate['args'] or not any(isinstance(arg, dict) for arg in predicate['args']):
+        return 1
+    # 如果存在嵌套谓词，递归计算最大深度
+    return 1 + max(calculate_nesting_depth(arg) for arg in predicate['args'] if isinstance(arg, dict))
+
+# 计算谓词嵌套复杂性
+def calculate_complexity(predicates):
+    max_depth = 0
+    total_args = 0
+
+    for pred in predicates:
+        total_args += len(pred['args'])
+        max_depth = max(max_depth, calculate_nesting_depth(pred))
+
+    avg_args = total_args / len(predicates) if predicates else 0
+    return {'average_args': avg_args, 'max_depth': max_depth}
+
+# 格式化嵌套谓词结构
+def format_predicates(predicates):
+    def format_predicate(predicate):
+        args = ", ".join(format_predicate(arg) if isinstance(arg, dict) else arg for arg in predicate['args'])
+        return f"{predicate['verb']}({args})"
+    
+    return [format_predicate(pred) for pred in predicates]
+
+# 汇总按年份的复杂性
+def summarize_by_year(files):
+    yearly_complexity = defaultdict(list)
+
+    for file in files:
+        date = file['date']
+        year = datetime.strptime(date, "%Y-%m-%d").year
+        file_path = file['file_path']
+
+        # 读取文件内容
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        # 提取所有谓词
+        predicates = []
+        for line in lines:
+            line = line.strip()
+            if line:
+                predicates.extend(extract_predicates(line))
+
+        # 计算文件的复杂性
+        complexity = calculate_complexity(predicates)
+        yearly_complexity[year].append(complexity)
+
+    # 统计每年平均复杂性
+    summarized = {}
+    for year, complexities in yearly_complexity.items():
+        avg_args = sum(c['average_args'] for c in complexities) / len(complexities)
+        max_depth = max(c['max_depth'] for c in complexities)
+        summarized[year] = {'average_args': avg_args, 'max_depth': max_depth}
+    return summarized
+
+# 可视化复杂性变化
+def plot_complexity_trends(complexity_by_year, output_path=None):
+    # 按年份排序
+    years = sorted(complexity_by_year.keys())
+    avg_args = [complexity_by_year[year]['average_args'] for year in years]
+    max_depth = [complexity_by_year[year]['max_depth'] for year in years]
+
+    # 创建画布
+    plt.figure(figsize=(12, 6))
+
+    # 绘制平均参数个数的折线图
+    plt.plot(years, avg_args, marker='o', label='Average Arguments')
+    plt.plot(years, max_depth, marker='s', label='Max Nesting Depth')
+
+    # 添加标题和标签
+    plt.title('Lyrics Complexity Trends Over Years', fontsize=16)
+    plt.xlabel('Year', fontsize=14)
+    plt.ylabel('Complexity Metrics', fontsize=14)
+    plt.legend(fontsize=12)
+    plt.grid(True)
+
+    # 保存图像或显示
+    if output_path:
+        plt.savefig(output_path, format='png', dpi=300)
+        print(f"Complexity trends saved to {output_path}")
+    plt.show()
+
+# 主程序
+def main():
+    # 设置语料库路径
+    corpus_path = r"C:\Users\PC\Desktop\PAN-24332220-FFLT-Corpus\1995-2014Lyrics_ChinesePopSong_Parsed_annotated_crawedfromNetease"
+    files = read_annotated_files(corpus_path)
+
+    # 按年份计算复杂性
+    complexity_by_year = summarize_by_year(files)
+
+    # 输出结果
+    print("Yearly Complexity Statistics:")
+    for year, stats in sorted(complexity_by_year.items()):
+        print(f"Year: {year}, Average Arguments: {stats['average_args']:.2f}, Max Nesting Depth: {stats['max_depth']}")
+
+    # 可视化复杂性变化
+    output_path = os.path.join(corpus_path, 'lyrics_complexity_trends.png')
+    plot_complexity_trends(complexity_by_year, output_path)
+
+if __name__ == "__main__":
+    main()

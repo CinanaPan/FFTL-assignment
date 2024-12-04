@@ -1,0 +1,79 @@
+import os
+import re
+import requests
+
+# 获取歌曲出版年份的函数
+def get_song_year_from_musicbrainz(song_name):
+    print(f"正在查询：{song_name}")  # 调试：打印正在查询的歌曲名
+    query = song_name + " release date"
+    url = f"https://musicbrainz.org/ws/2/recording/?query={query}&fmt=json"
+    try:
+        response = requests.get(url)
+        data = response.json()
+
+        if data.get('recordings'):
+            year = data['recordings'][0].get('first-release-date', '未知')
+            print(f"找到年份：{year}")  # 调试：打印找到的年份
+            return year
+        else:
+            print("未找到匹配的歌曲")  # 调试：没有找到歌曲时的提示
+            return "未找到年份信息"
+    except Exception as e:
+        print(f"请求出错：{e}")  # 调试：捕获并打印异常
+        return "请求失败"
+
+# 去掉数字后缀的函数
+def remove_number_suffix(file_name):
+    match = re.match(r'([\w\s\.\_\-\(\)\u4e00-\u9fff]+)(?:_\d+)?\.txt$', file_name)
+    if match:
+        return match.group(1) + ".txt"
+    return file_name
+
+# 重命名文件的函数
+def rename_files_and_get_years(base_path):
+    print(f"开始处理路径：{base_path}")
+    for song_file in os.listdir(base_path):
+        # 只处理 .txt.txt 文件
+        if song_file.endswith(".txt.txt"):
+            print(f"发现文件：{song_file}")
+            # 提取歌曲名（去掉可能的数字后缀和多余的 .txt 后缀）
+            song_name_match = re.match(r'([\w\s\.\_\-\(\)\u4e00-\u9fff]+)(?:_\d+)?\.txt\.txt$', song_file)
+            if song_name_match:
+                song_name = song_name_match.group(1)
+                print(f"提取到歌曲名：{song_name}")
+            else:
+                print(f"文件名格式不匹配：{song_file}")
+                continue
+
+            # 查询歌曲的出版年份
+            year = get_song_year_from_musicbrainz(song_name)
+            new_name = f"{year}_{song_name}.txt" if year != "未知" else f"未知_{song_name}.txt"
+            old_file_path = os.path.join(base_path, song_file)
+            new_file_path = os.path.join(base_path, new_name)
+
+            # 执行初步重命名
+            try:
+                os.rename(old_file_path, new_file_path)
+                print(f"成功重命名为：{new_name}")
+            except Exception as e:
+                print(f"重命名失败：{e}")
+
+    # 二次处理：去掉重命名后的数字后缀
+    for song_file in os.listdir(base_path):
+        if song_file.endswith(".txt"):
+            new_name = remove_number_suffix(song_file)
+            old_file_path = os.path.join(base_path, song_file)
+            new_file_path = os.path.join(base_path, new_name)
+
+            if old_file_path != new_file_path:
+                try:
+                    os.rename(old_file_path, new_file_path)
+                    print(f"二次重命名：{song_file} -> {new_name}")
+                except Exception as e:
+                    print(f"二次重命名失败：{e}")
+
+# 设置歌词语料库的路径
+base_path = r"C:\Users\PC\Desktop\PAN-24332220-FFLT-Corpus\1995-2014Lyrics_ChinesePopSong_Parsed_annotated_crawedfromNetease"
+
+# 调用函数进行重命名并获取年份
+rename_files_and_get_years(base_path)

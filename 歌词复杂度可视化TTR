@@ -1,0 +1,183 @@
+import os
+import re
+import pandas as pd
+import matplotlib.pyplot as plt
+from collections import Counter
+from math import log2
+
+# 设置语料库路径
+corpus_path = r"C:\Users\PC\Desktop\PAN-24332220-FFLT-Corpus\1995-2014Lyrics_ChinesePopSong_Parsed_annotated_crawedfromNetease"
+
+# 检查路径是否有效
+if not os.path.exists(corpus_path):
+    raise FileNotFoundError(f"The path {corpus_path} does not exist.")
+
+# 解析每行数据并提取词和标注
+def parse_line(line):
+    tokens = [tuple(word.rsplit('/', 1)) for word in line.split() if '/' in word]  # 提取 '词/标注'
+    words = [t[0] for t in tokens]
+    tags = [t[1] for t in tokens]
+    return words, tags
+
+# 计算词汇丰富度（Type-Token Ratio, TTR）
+def type_token_ratio(items):
+    return len(set(items)) / len(items) if items else 0
+
+# 计算信息熵（Shannon Entropy）
+def shannon_entropy(items):
+    if not items:
+        return 0
+    freq = Counter(items)
+    total = sum(freq.values())
+    return -sum((count / total) * log2(count / total) for count in freq.values())
+
+# 从文件名中提取日期和歌曲名
+def extract_metadata(file_name):
+    file_name = file_name.strip()
+    print(f"Extracting metadata from cleaned file name: {repr(file_name)}")
+
+    # 匹配完整日期格式 YYYY-MM-DD
+    match_full = re.match(r"^(\d{4}-\d{2}-\d{2})_(.+)\.txt$", file_name)
+    if match_full:
+        date, song_name = match_full.groups()
+        print(f"Extracted: Date = {date}, Song Name = {song_name}")
+        return date, song_name
+
+    # 匹配年份和月份格式 YYYY-MM
+    match_month = re.match(r"^(\d{4}-\d{2})_(.+)\.txt$", file_name)
+    if match_month:
+        date, song_name = match_month.groups()
+        date = f"{date}-01"  # 补全为第一天
+        print(f"Extracted: Date = {date} (default day), Song Name = {song_name}")
+        return date, song_name
+
+    # 匹配仅年份格式 YYYY
+    match_year = re.match(r"^(\d{4})_(.+)\.txt$", file_name)
+    if match_year:
+        date, song_name = match_year.groups()
+        date = f"{date}-01-01"  # 补全为年初
+        print(f"Extracted: Date = {date} (default month and day), Song Name = {song_name}")
+        return date, song_name
+
+    # 无法匹配的文件名
+    print(f"File name does not match expected patterns: {repr(file_name)}")
+    return None, None
+
+# 分析单个文件
+def analyze_file(file_path):
+    with open(file_path, 'r', encoding='utf-8') as file:
+        lines = file.readlines()
+
+    all_words, all_tags = [], []
+    for line in lines:
+        words, tags = parse_line(line.strip())
+        all_words.extend(words)
+        all_tags.extend(tags)
+
+    # 计算整体复杂性
+    overall_ttr = type_token_ratio(all_words)
+    overall_entropy = shannon_entropy(all_words)
+    tag_ttr = type_token_ratio(all_tags)
+    tag_entropy = shannon_entropy(all_tags)
+
+    return {
+        'File_TTR': overall_ttr,
+        'File_Entropy': overall_entropy,
+        'Tag_TTR': tag_ttr,
+        'Tag_Entropy': tag_entropy
+    }
+
+# 遍历语料库中的文件
+def analyze_corpus(corpus_path):
+    unmatched_files = []  # 未匹配的文件列表
+    results = []
+
+    for file_name in os.listdir(corpus_path):
+        print(f"Original file name: {repr(file_name)}")
+        file_name_cleaned = file_name.strip()
+        date, song_name = extract_metadata(file_name_cleaned)
+
+        if date is None:  # 如果日期未被提取
+            unmatched_files.append(file_name_cleaned)
+            continue
+
+        file_path = os.path.join(corpus_path, file_name)
+        if not os.path.isfile(file_path):  # 跳过无效文件
+            unmatched_files.append(file_name_cleaned)
+            continue
+
+        # 分析文件内容
+        try:
+            file_analysis = analyze_file(file_path)
+            results.append({
+                'Date': date,
+                'Song Name': song_name,
+                'File_TTR': file_analysis['File_TTR'],
+                'File_Entropy': file_analysis['File_Entropy'],
+                'Tag_TTR': file_analysis['Tag_TTR'],
+                'Tag_Entropy': file_analysis['Tag_Entropy']
+            })
+        except Exception as e:
+            print(f"Error processing file {file_name}: {e}")
+            unmatched_files.append(file_name_cleaned)
+
+    return results, unmatched_files
+
+# 按时间段聚合数据（如按年聚合）
+def aggregate_by_year(df):
+    df['Year'] = pd.to_datetime(df['Date'], errors='coerce').dt.year  # 转换日期并提取年份
+    numeric_columns = ['File_TTR', 'File_Entropy', 'Tag_TTR', 'Tag_Entropy']
+    yearly_avg = df.groupby('Year')[numeric_columns].mean().reset_index()  # 按年份计算平均值
+    return yearly_avg
+
+# 时间趋势分析与可视化
+def plot_trends(df, output_path):
+    aggregated_df = aggregate_by_year(df)
+
+    # 绘制每个复杂性指标的趋势图
+    metrics = ['File_TTR', 'File_Entropy', 'Tag_TTR', 'Tag_Entropy']
+    plt.figure(figsize=(12, 8))
+
+    for i, metric in enumerate(metrics, start=1):
+        plt.subplot(2, 2, i)
+        plt.plot(aggregated_df['Year'], aggregated_df[metric], marker='o', label=metric)
+        plt.title(f'{metric} Over Years')
+        plt.xlabel('Year')
+        plt.ylabel(metric)
+        plt.grid()
+        plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_path, 'complexity_trends_yearly.png'))
+    plt.show()
+
+# 主程序
+def main():
+    results, unmatched_files = analyze_corpus(corpus_path)
+
+    # 转换为 DataFrame 并保存
+    df = pd.DataFrame(results)
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')  # 转换日期格式
+    df = df.dropna(subset=['Date'])  # 移除无效日期
+    df.sort_values('Date', inplace=True)
+
+    # 保存分析结果到 CSV 文件
+    output_csv = os.path.join(corpus_path, 'lyrics_complexity_analysis_with_dates.csv')
+    df.to_csv(output_csv, index=False, encoding='utf-8-sig')
+    print(f"Analysis results saved to {output_csv}")
+
+    # 保存未匹配文件列表到日志文件
+    if unmatched_files:
+        unmatched_log_path = os.path.join(corpus_path, 'unmatched_files.log')
+        with open(unmatched_log_path, 'w', encoding='utf-8') as log_file:
+            log_file.write("Unmatched Files:\n")
+            for file in unmatched_files:
+                log_file.write(f"{file}\n")
+        print(f"Unmatched files logged to: {unmatched_log_path}")
+
+    # 绘制时间趋势图
+    plot_trends(df, corpus_path)
+
+# 运行主程序
+if __name__ == '__main__':
+    main()
